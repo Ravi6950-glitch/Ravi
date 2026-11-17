@@ -1,0 +1,441 @@
+// Chorus - multi-platform social command center
+// SQLite keeps setup to a single command; swap `provider` to postgresql for prod.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// People & workspaces  ("user family")
+// ---------------------------------------------------------------------------
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  name         String
+  passwordHash String
+  avatarColor  String   @default("#6366f1")
+  timezone     String   @default("UTC")
+  jobTitle     String?
+  lastLoginAt  DateTime?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  memberships  Membership[]
+  posts        Post[]        @relation("PostAuthor")
+  approvals    Post[]        @relation("PostApprover")
+  activity     ActivityLog[]
+  invitesSent  Invite[]      @relation("InviteSender")
+
+  @@index([email])
+}
+
+model Workspace {
+  id        String   @id @default(cuid())
+  name      String
+  slug      String   @unique
+  brandVoice String  @default("Clear, warm and useful. Confident without hype.")
+  brandColor String  @default("#6366f1")
+  timezone  String   @default("UTC")
+  weekStart Int      @default(1) // 0 = Sunday, 1 = Monday
+  plan      String   @default("studio")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  memberships      Membership[]
+  accounts         SocialAccount[]
+  posts            Post[]
+  media            MediaAsset[]
+  queueSlots       QueueSlot[]
+  campaigns        Campaign[]
+  agentRuns        AgentRun[]
+  insights         Insight[]
+  automationRules  AutomationRule[]
+  activity         ActivityLog[]
+  invites          Invite[]
+  profileAudits    ProfileAudit[]
+
+  @@index([slug])
+}
+
+// Roles: OWNER | ADMIN | EDITOR | CONTRIBUTOR | VIEWER
+model Membership {
+  id          String   @id @default(cuid())
+  userId      String
+  workspaceId String
+  role        String   @default("EDITOR")
+  createdAt   DateTime @default(now())
+
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, workspaceId])
+  @@index([workspaceId])
+}
+
+model Invite {
+  id          String   @id @default(cuid())
+  workspaceId String
+  email       String
+  role        String   @default("EDITOR")
+  token       String   @unique
+  invitedById String
+  acceptedAt  DateTime?
+  expiresAt   DateTime
+  createdAt   DateTime @default(now())
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  invitedBy User      @relation("InviteSender", fields: [invitedById], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId])
+  @@index([email])
+}
+
+// ---------------------------------------------------------------------------
+// Connected social accounts
+// ---------------------------------------------------------------------------
+
+// status: CONNECTED | EXPIRED | REVOKED | ERROR | PENDING
+// connection: OAUTH | TOKEN | WEBHOOK | SANDBOX
+model SocialAccount {
+  id             String   @id @default(cuid())
+  workspaceId    String
+  platform       String   // key from the platform registry, e.g. "instagram"
+  handle         String
+  displayName    String
+  externalId     String?
+  avatarUrl      String?
+  profileUrl     String?
+  bio            String?
+  status         String   @default("CONNECTED")
+  connection     String   @default("SANDBOX")
+  accessToken    String?  // encrypted at rest via lib/crypto
+  refreshToken   String?
+  tokenExpiresAt DateTime?
+  scopes         String?
+  followers      Int      @default(0)
+  following      Int      @default(0)
+  postCount      Int      @default(0)
+  lastSyncedAt   DateTime?
+  lastErrorAt    DateTime?
+  lastError      String?
+  config         String?  // JSON: platform-specific extras (board id, subreddit, chat id...)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  workspace     Workspace       @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  targets       PostTarget[]
+  snapshots     MetricSnapshot[]
+  queueSlots    QueueSlot[]
+  insights      Insight[]
+  audits        ProfileAudit[]
+  bestTimes     BestTime[]
+
+  @@unique([workspaceId, platform, handle])
+  @@index([workspaceId, status])
+}
+
+// ---------------------------------------------------------------------------
+// Content, scheduling & publishing
+// ---------------------------------------------------------------------------
+
+model Campaign {
+  id          String   @id @default(cuid())
+  workspaceId String
+  name        String
+  color       String   @default("#6366f1")
+  goal        String?
+  startsAt    DateTime?
+  endsAt      DateTime?
+  createdAt   DateTime @default(now())
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  posts     Post[]
+
+  @@index([workspaceId])
+}
+
+// status: DRAFT | NEEDS_APPROVAL | SCHEDULED | QUEUED | PUBLISHING | PUBLISHED | PARTIAL | FAILED | PAUSED
+model Post {
+  id            String   @id @default(cuid())
+  workspaceId   String
+  authorId      String
+  campaignId    String?
+  title         String?
+  baseContent   String   @default("")
+  status        String   @default("DRAFT")
+  scheduledAt   DateTime?
+  publishedAt   DateTime?
+  useNextSlot   Boolean  @default(false) // Buffer-style "add to queue"
+  firstComment  String?
+  link          String?
+  tags          String?  // JSON array
+  aiGenerated   Boolean  @default(false)
+  aiAgent       String?
+  approvedById  String?
+  approvedAt    DateTime?
+  recurrence    String?  // JSON: { freq, interval, until }
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  workspace  Workspace    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  author     User         @relation("PostAuthor", fields: [authorId], references: [id], onDelete: Cascade)
+  approvedBy User?        @relation("PostApprover", fields: [approvedById], references: [id])
+  campaign   Campaign?    @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+  targets    PostTarget[]
+  media      PostMedia[]
+
+  @@index([workspaceId, status])
+  @@index([workspaceId, scheduledAt])
+}
+
+// status: PENDING | PUBLISHING | PUBLISHED | FAILED | SKIPPED
+model PostTarget {
+  id             String   @id @default(cuid())
+  postId         String
+  accountId      String
+  content        String?  // per-platform override; null = use post.baseContent
+  status         String   @default("PENDING")
+  externalPostId String?
+  externalUrl    String?
+  publishedAt    DateTime?
+  attempts       Int      @default(0)
+  lastAttemptAt  DateTime?
+  error          String?
+  threadParts    String?  // JSON array for X/Threads/Bluesky multi-part threads
+  options        String?  // JSON: platform options (subreddit, board, title, privacy...)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  post    Post          @relation(fields: [postId], references: [id], onDelete: Cascade)
+  account SocialAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  metrics PostMetric[]
+
+  @@unique([postId, accountId])
+  @@index([status])
+}
+
+model MediaAsset {
+  id          String   @id @default(cuid())
+  workspaceId String
+  url         String
+  kind        String   @default("image") // image | video | gif | document
+  mimeType    String?
+  alt         String?
+  width       Int?
+  height      Int?
+  sizeBytes   Int?
+  durationSec Int?
+  createdAt   DateTime @default(now())
+
+  workspace Workspace   @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  posts     PostMedia[]
+
+  @@index([workspaceId])
+}
+
+model PostMedia {
+  id       String @id @default(cuid())
+  postId   String
+  mediaId  String
+  position Int    @default(0)
+
+  post  Post       @relation(fields: [postId], references: [id], onDelete: Cascade)
+  media MediaAsset @relation(fields: [mediaId], references: [id], onDelete: Cascade)
+
+  @@unique([postId, mediaId])
+}
+
+// Buffer-style posting schedule: a weekly grid of slots the queue drains into.
+model QueueSlot {
+  id          String  @id @default(cuid())
+  workspaceId String
+  accountId   String? // null = applies to every account
+  dayOfWeek   Int     // 0 = Sunday .. 6 = Saturday
+  hour        Int
+  minute      Int     @default(0)
+  enabled     Boolean @default(true)
+  source      String  @default("manual") // manual | ai
+
+  workspace Workspace      @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  account   SocialAccount? @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId, dayOfWeek])
+}
+
+// ---------------------------------------------------------------------------
+// Analytics
+// ---------------------------------------------------------------------------
+
+model MetricSnapshot {
+  id           String   @id @default(cuid())
+  accountId    String
+  date         DateTime // midnight UTC for the day being measured
+  followers    Int      @default(0)
+  followerDelta Int     @default(0)
+  impressions  Int      @default(0)
+  reach        Int      @default(0)
+  engagements  Int      @default(0)
+  likes        Int      @default(0)
+  comments     Int      @default(0)
+  shares       Int      @default(0)
+  saves        Int      @default(0)
+  clicks       Int      @default(0)
+  videoViews   Int      @default(0)
+  profileViews Int      @default(0)
+  postsCount   Int      @default(0)
+  createdAt    DateTime @default(now())
+
+  account SocialAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@unique([accountId, date])
+  @@index([accountId, date])
+}
+
+model PostMetric {
+  id             String   @id @default(cuid())
+  targetId       String
+  capturedAt     DateTime @default(now())
+  impressions    Int      @default(0)
+  reach          Int      @default(0)
+  likes          Int      @default(0)
+  comments       Int      @default(0)
+  shares         Int      @default(0)
+  saves          Int      @default(0)
+  clicks         Int      @default(0)
+  videoViews     Int      @default(0)
+  engagementRate Float    @default(0)
+
+  target PostTarget @relation(fields: [targetId], references: [id], onDelete: Cascade)
+
+  @@index([targetId, capturedAt])
+}
+
+// Best-time-to-post heatmap, recomputed by the Timing Oracle agent.
+model BestTime {
+  id        String @id @default(cuid())
+  accountId String
+  dayOfWeek Int
+  hour      Int
+  score     Float  @default(0)
+  sampleSize Int   @default(0)
+  updatedAt DateTime @updatedAt
+
+  account SocialAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@unique([accountId, dayOfWeek, hour])
+  @@index([accountId])
+}
+
+// ---------------------------------------------------------------------------
+// AI agents & automation
+// ---------------------------------------------------------------------------
+
+// status: RUNNING | SUCCEEDED | FAILED
+model AgentRun {
+  id          String   @id @default(cuid())
+  workspaceId String
+  agent       String   // registry key, e.g. "performance-analyst"
+  trigger     String   @default("manual") // manual | schedule | event
+  status      String   @default("RUNNING")
+  engine      String   @default("heuristic") // claude | heuristic
+  model       String?
+  input       String?  // JSON
+  output      String?  // JSON
+  summary     String?
+  inputTokens  Int     @default(0)
+  outputTokens Int     @default(0)
+  durationMs  Int      @default(0)
+  error       String?
+  startedAt   DateTime @default(now())
+  finishedAt  DateTime?
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  insights  Insight[]
+
+  @@index([workspaceId, agent, startedAt])
+}
+
+// severity: INFO | GOOD | WARN | CRITICAL
+model Insight {
+  id          String   @id @default(cuid())
+  workspaceId String
+  accountId   String?
+  runId       String?
+  agent       String
+  severity    String   @default("INFO")
+  title       String
+  body        String
+  metric      String?
+  metricDelta Float?
+  actionLabel String?
+  actionHref  String?
+  readAt      DateTime?
+  createdAt   DateTime @default(now())
+
+  workspace Workspace      @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  account   SocialAccount? @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  run       AgentRun?      @relation(fields: [runId], references: [id], onDelete: SetNull)
+
+  @@index([workspaceId, createdAt])
+}
+
+// Per-profile audit produced by the Profile Auditor agent.
+model ProfileAudit {
+  id          String   @id @default(cuid())
+  workspaceId String
+  accountId   String
+  score       Int      @default(0)
+  grade       String   @default("C")
+  strengths   String   @default("[]") // JSON array
+  issues      String   @default("[]") // JSON array of { title, detail, severity, fix }
+  cadence     String?
+  summary     String?
+  createdAt   DateTime @default(now())
+
+  workspace Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  account   SocialAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@index([accountId, createdAt])
+}
+
+model AutomationRule {
+  id              String   @id @default(cuid())
+  workspaceId     String
+  agent           String
+  name            String
+  enabled         Boolean  @default(true)
+  intervalMinutes Int      @default(360)
+  config          String?  // JSON
+  lastRunAt       DateTime?
+  nextRunAt       DateTime?
+  lastStatus      String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, agent])
+  @@index([enabled, nextRunAt])
+}
+
+model ActivityLog {
+  id          String   @id @default(cuid())
+  workspaceId String
+  userId      String?
+  action      String
+  entityType  String?
+  entityId    String?
+  detail      String?
+  createdAt   DateTime @default(now())
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  user      User?     @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([workspaceId, createdAt])
+}

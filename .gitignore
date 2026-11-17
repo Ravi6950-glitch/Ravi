@@ -1,0 +1,26 @@
+node_modules/
+.next/
+out/
+build/
+dist/
+*.tsbuildinfo
+next-env.d.ts
+
+# Local env + secrets
+.env
+.env.local
+.env*.local
+
+# SQLite database + uploads
+prisma/*.db
+prisma/*.db-journal
+prisma/migrations/dev.db*
+public/uploads/*
+!public/uploads/.gitkeep
+
+# OS / editor
+.DS_Store
+*.log
+npm-debug.log*
+.idea/
+.vscode/
