@@ -32,15 +32,17 @@ on a schedule in the background.
 ## Quick start
 
 ```bash
-git clone <this-repo> chorus && cd chorus
-cp .env.example .env
+git clone https://github.com/Ravi6950-glitch/Ravi.git chorus
+cd chorus
+git checkout claude/wizardly-turing-ob7025
 
-# Generate a signing/encryption secret and put it in .env as AUTH_SECRET
-openssl rand -base64 48
-
-npm run setup     # install, generate the client, create the database, seed demo data
+npm run setup     # installs, writes .env with a generated secret, creates and seeds the database
 npm run dev       # http://localhost:3000
 ```
+
+`npm run setup` is the only command you need — it creates `.env` for you with a freshly
+generated `AUTH_SECRET`. An existing `.env` is never overwritten. Works the same on
+macOS, Linux and Windows.
 
 Sign in with the seeded demo account:
 
@@ -58,6 +60,11 @@ To start from nothing instead, skip the seed and create your own workspace at `/
 
 **Requirements:** Node.js 20+. Nothing else — the database is SQLite and the AI agents
 work with no API key.
+
+> **It has to run on the machine whose browser you open it in.** `localhost` always means
+> "this computer", so starting the server on one machine and browsing from another gives
+> `ERR_CONNECTION_REFUSED`. Run the commands above on your own machine and open
+> `http://localhost:3000` there.
 
 ---
 
@@ -229,6 +236,7 @@ npm run dev          # development server
 npm run build        # production build
 npm run start        # production server
 npm run typecheck    # tsc --noEmit
+npm run init-env     # write .env with a generated secret (setup does this)
 npm run db:push      # apply the schema
 npm run db:seed      # seed the demo workspace
 npm run db:reset     # wipe and re-seed
